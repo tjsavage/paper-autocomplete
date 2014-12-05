@@ -1,0 +1,48 @@
+/* Style the children core-item nodes */
+::content .highlighted {
+  background-color: #99ccff;
+}
+::content .core-selected {
+  font-weight: normal;
+}
+/* Note: Rules were split to boost CSS specificity */
+::content paper-item:hover,
+::content core-item:hover {
+  background-color: #6699cc;
+}
+
+/* core-item looks better with side padding */
+::content core-item {
+  padding-left: 0.5em;
+  padding-right: 0.5em;
+}
+/* Pick default text color, which affects the paper-ripple color */
+::content core-item, ::content paper-item {
+  color: #003366;
+  overflow: hidden;
+}
+
+#frame, #top-input {
+  width: inherit;
+}
+#bottom-suggest {
+  position: relative;
+  width: inherit;
+}
+#suggest-box {
+  max-height: inherit;
+  position: absolute;
+  top: 0px;
+  left: 0px;
+  z-index: 10000;
+  width: inherit;
+
+  /* The following style may be overridden */
+  background-color: #ffffff;
+  border: solid 1px #000000;
+  box-shadow: 5px 5px 2px #999999;
+}
+
+.hidden {
+  display: none;
+}
