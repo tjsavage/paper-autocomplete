@@ -1,0 +1,476 @@
+<!--
+
+`paper-autocomplete` extends `paper-input`, adding autocomplete functionality.
+The current value is used to prefix-match against the labels of this element's
+child nodes (either `core-item` or `paper-item`). Those that match are shown,
+while those that fail to match are hidden. The suggested items can be selected
+using keyboard and mouse input.
+
+Example:
+    <paper-autocomplete label="Country" on-change="{{changeHandler}}">
+      <core-item label="United States></core-item>
+      <core-item label="Canada"></core-item>
+    </paper-autocomplete>
+
+All attributes and events of paper-input are inherited by paper-autocomplete.
+
+New Attributes:
+    maxItems
+    caseSensitive
+    delimiter
+    allowWhitespace
+
+New Events:
+    none yet
+
+-->
+
+<polymer-element name="paper-autocomplete" extends="paper-input" attributes="maxItems caseSensitive delimiter">
+  <template>
+    <link href="paper-autocomplete.css" rel="stylesheet">
+    <div id="frame">
+      <div id="top-input">
+        <shadow></shadow>
+      </div>
+      <div id="bottom-suggest">
+        <core-selector id="suggest-box" class="suggest-box-style hidden"
+                       on-core-activate="{{selectAction}}">
+          <content id="items" select="core-item,paper-item"></content>
+        </core-selector>
+      </div>
+    </div>
+  </template>
+  <script>
+    Polymer({
+      /**
+       * Maximum number of items to show in the suggestion box.
+       * A null value indicates that there is no limit.
+       *
+       * @attribute: maxItems
+       * @type: integer | null
+       */
+      maxItems: null,
+
+      /**
+       * Flag that indicates the case-sensitivity of prefix-matching.
+       *
+       * @attribute: caseSensitive
+       * @type: boolean
+       */
+      caseSensitive: false,
+
+      /**
+       * If null, this element acts like a standard autocomplete unit.
+       * If given a value, then instead of replacing the full text string,
+       * this element will replace the substring after the last occurrence of
+       * the delimiter. In effect, making this like a list selector.
+       *
+       * Example: delimiter === '' (Append-only)
+       * When the text box has 'abcd', selecting 'ef' makes this 'abcdef'
+       * This choice of delimiter prevents suggestions from being filtered.
+       *
+       * Example: delimiter === ',' (CSV-style list)
+       * If the text box has 'red,orange,g', and 'green' is selected,
+       * then the text box will have 'red,orange,green'.
+       *
+       * Some delimiters work well with dynamic child node suggestions.
+       *
+       * Example: delimiter === '/' (Directory path)
+       * If the text box has 'drive/google/photos/' and 'May2012' is selected,
+       * then the text box will have 'drive/google/photos/May2012'.
+       *
+       * @attribute: delimiter
+       * @type: string | null
+       */
+      delimiter: null,
+
+      /**
+       * Set to true to tolerate whitespace when filtering suggestions.
+       * Whitespace will also be maintained when a suggestion is selected.
+       * Note: This attribute is only useful when there is a delimiter.
+       *
+       * Example: delimiter === ',' and allowWhitespace === true
+       * If the text box has 'red, orange,  g' and 'green' is selected,
+       * then the text box will have 'red, orange,  green'.
+       *
+       * @attribute: allowWhitespace
+       * @type: boolean
+       */
+      allowWhitespace: false,
+
+      /**
+       * Whether this element is currently being edited or not. Becomes true
+       * when the internal paper-input gains focus or receives input.
+       *
+       * @type: boolean
+       */
+      editing: false,
+
+      /**
+       * A special flag indicating that the suggestion box is going to close.
+       */
+      closing: false,
+
+      /**
+       * List of indexes of children that can be shown. The children are
+       * filtered by the current value.
+       *
+       * @type: Array<integer>
+       */
+      showing: [],
+
+      /**
+       * Tracks the highlight position in the showing array. The corresponding
+       * child node is highlighted with the 'highlighted' class.
+       *
+       * @type: int | null
+       */
+      highlightIndex: null,
+
+      /**
+       * Called when this node is added to the DOM. Sets up event listeners
+       * through the shadow DOM to its internal paper-input. Additionally,
+       * watches for mutations in its light DOM children.
+       */
+      ready: function() {
+        this.super();
+
+        // Add listener to the suggestBox to cancel the suggestion box from
+        // closing if the user starts to click on it.
+        var suggestBox = this.$['suggest-box'];
+        suggestBox.addEventListener(
+          'mousedown',
+          this.cancelClosing.bind(this)
+        );
+
+        // Listen to inputs to determine editing status.
+        this.addEventListener('input', this.inputAction.bind(this));
+        this.addEventListener('keydown', this.keydownAction.bind(this));
+        this.addEventListener('focus', this.inputFocusAction.bind(this));
+        this.addEventListener('blur', this.inputBlurAction.bind(this));
+
+        // Capture changes to children
+        this.watchMutation();
+      },
+
+      /**
+       * Whenever the light DOM children change, then rerender this element.
+       */
+      watchMutation: function() {
+          var change = function() {
+            this.filterSuggestions();
+            // Note: onMutation unbinds after each use, so we need to rebind.
+            this.onMutation(this, change.bind(this));
+          }
+          this.onMutation(this, change.bind(this));
+      },
+
+      /**
+       * Set the editing flag to true upon gaining focus.
+       */
+      inputFocusAction: function(e) {
+        this.super(e);
+        if (!this.closing) {
+          this.editing = true;
+        }
+        this.closing = false;
+        this.filterSuggestions();
+      },
+
+      /**
+       * When blurring, potentially set editing to false.
+       * Has a delay before the suggestion box is closed in case the user starts
+       * to click on the suggestion box.
+       */
+      inputBlurAction: function(e) {
+        this.super(e);
+
+        this.closing = true;
+        this.async(function() {
+          if (this.closing) {
+            this.showSuggestions(false);
+            this.editing = false;
+          }
+        }, null, 100);
+      },
+
+      /**
+       * If the mouse is pressed down on the suggestion box, set the closing
+       * flag to false.
+       */
+      cancelClosing: function(e) {
+        this.async(function() {
+          if (this.closing) {
+            this.closing = false;
+          }
+        }, null, 0);
+      },
+
+      /**
+       * On the hidden input's 'input' event, the fact that data changed means
+       * that the user is editing. Re-render the suggestions.
+       * Note: Fires this element's 'input' event.
+       */
+      inputAction: function(e) {
+        this.closing = false;
+        this.editing = true;
+        this.filterSuggestions();
+
+        // Convert a standard Event into the Custom Event for consistency.
+        if (!(e instanceof CustomEvent)) {
+          e.stopPropagation();
+
+          this.fireInput();
+        }
+      },
+
+      /**
+       * Filters the potential list of suggestions drawn from child node labels.
+       * Use a prefixMatch to decide which child nodes to show/hide.
+       * Finally, show the suggestion box if the conditions are right.
+       */
+      filterSuggestions: function() {
+        var showing = [];
+        var childNodes = this.$.items.getDistributedNodes();
+        for (var i = 0; i < childNodes.length; i++) {
+          var item = childNodes[i];
+
+          // Remove style if necessary.
+          if (this.highlightIndex !== i) {
+            item.classList.toggle('highlighted', false);
+          }
+
+          // Show nodes with a prefix match, as long
+          // as the maxItems limit has not been reached.
+          if ((this.maxItems === null || showing.length < this.maxItems) &&
+            this.prefixMatch(this.getItemLabel(item))) {
+
+            showing.push(i);
+            item.style.display = '';
+          } else {
+            item.style.display = 'none';
+          }
+        }
+        this.showing = showing;
+
+        this.showSuggestions(this.shouldShowSuggestions());
+      },
+
+      /**
+       * Depending on the caseSensitive attribute, returns whether or not the
+       * given word has a prefix match with the current value of this element.
+       */
+      prefixMatch: function(word) {
+        var curValue = this.getInputValueSuffix();
+        if (!this.caseSensitive) {
+          return word.toLowerCase().indexOf(curValue.toLowerCase()) === 0;
+        }
+        return word.indexOf(curValue) === 0;
+      },
+
+      /**
+       * Get the suffix of the current input value. If there is no delimiter,
+       * then the full input value is used instead.
+       */
+      getInputValueSuffix: function() {
+        var value = this.value || '';
+        if (this.delimiter === '') {
+          return '';
+        } else if (!this.delimiter) {
+          return value;
+        }
+
+        // Find the suffix.
+        var parts = value.split(this.delimiter);
+        var suffix = parts[parts.length - 1];
+
+        // Handle excess whitespace.
+        if (this.allowWhitespace) {
+          return suffix.trimLeft();
+        }
+        return suffix;
+      },
+
+      /**
+       * Gets the label out of the item for prefix-matching and replacement.
+       * Note: paper-item and core-item mismatch; label is not available on the
+       * former anymore.
+       */
+      getItemLabel: function(item) {
+        return item.textContent || item.label;
+      },
+
+      /**
+       * Determine whether or not the suggestBox should be shown.
+       * Show if this node is being edited and there are valid suggestions.
+       */
+      shouldShowSuggestions: function() {
+        return this.editing && this.showing.length > 0;
+      },
+
+      /**
+       * The suggestion box is shown/hidden. If hidden, then additional internal
+       * values are reset.
+       */
+      showSuggestions: function(shouldShow) {
+        this.$['suggest-box'].classList.toggle('hidden', !shouldShow);
+        if (!shouldShow) {
+          this.highlightReset();
+          this.closing = false;
+        }
+      },
+
+      /**
+       * Process the 'core-activate' event when a suggestion was tapped.
+       */
+      selectAction: function(e) {
+        this.selectItem(e, e.detail.item);
+      },
+
+      /**
+       * When an item in the suggestion list is clicked or 'enter' is pressed
+       * while it is being highlighted, then replace this node's value.
+       *
+       * This node is no longer being edited, so re-render will hide it.
+       * Note: Fires this element's 'input' and 'change' events.
+       * Special: Click loses the element's focus, but pressing enter does not.
+       */
+      selectItem: function(e, item) {
+        this.highlightReset();
+
+        this.replaceValue(this.getItemLabel(item));
+
+        this.fireInput();
+        this.changeAction(e);
+
+        this.showSuggestions(false);
+        this.editing = false;
+      },
+
+      /**
+       * Replace the current value and inputValue of this element.
+       * If there is a delimiter, replace only the suffix.
+       */
+      replaceValue: function(newValue) {
+        if (this.delimiter === '') {
+          this.value += newValue;
+        } else if (!this.delimiter) {
+          this.value = newValue;
+        } else {
+          // Find the suffix.
+          var parts = this.value.split(this.delimiter);
+          var suffix = parts[parts.length - 1];
+
+          // Compute the replacement, taking into account whitespace.
+          var keepLength = 0;
+          if (this.allowWhitespace) {
+            keepLength = suffix.length - suffix.trimLeft().length
+          }
+          parts[parts.length - 1] = suffix.substring(0, keepLength) + newValue;
+
+          // Replace the input value.
+          this.value = parts.join(this.delimiter);
+        }
+      },
+
+      /**
+       * Fire the input event. (The invocation matches core-input's.)
+       */
+      fireInput: function() {
+        this.fire('input', null, this);
+      },
+
+      /**
+       * Remove highlight off the current item and stop tracking it.
+       */
+      highlightReset: function() {
+        this.highlightItem(false);
+        this.highlightIndex = null;
+      },
+
+      /**
+       * Add/remove the highlighted class off the currently highlighted item.
+       */
+      highlightItem: function(shouldHighlight) {
+          if (this.highlightIndex !== null) {
+            var selected = this.showing[this.highlightIndex];
+            this.$.items.getDistributedNodes()[selected].classList.toggle(
+              'highlighted',
+              shouldHighlight
+            );
+          }
+      },
+
+      /**
+       * Pressing up and down change the currently highlighted item.
+       * Pressing enter will select that item.
+       * Pressing escape will close the suggestBox.
+       * Pressing any other key will reset highlight.
+       */
+      keydownAction: function(e) {
+        var KEY_UP = 38;
+        var KEY_DOWN = 40;
+        var KEY_ENTER = 13;
+        var KEY_ESC = 27;
+
+        // The suggest box is not open.
+        if (!this.shouldShowSuggestions()) {
+          // If up or down was hit, potentially open the suggest box.
+          if (e.keyCode === KEY_UP || e.keyCode === KEY_DOWN) {
+            this.editing = true;
+            this.showSuggestions(this.shouldShowSuggestions());
+          }
+          return;
+        }
+
+        // The suggest box is open. Handle the keypresses accordingly.
+        switch(e.keyCode) {
+          case KEY_UP: // Highlight the item above the current one.
+            e.preventDefault();
+
+            // unhighlight, change selection, highlight
+            this.highlightItem(false);
+            if (this.highlightIndex === null || this.highlightIndex === 0) {
+              this.highlightIndex = this.showing.length - 1;
+            } else {
+              this.highlightIndex--;
+            }
+            this.highlightItem(true);
+            break;
+          case KEY_DOWN: // Highlight the item below the current one.
+            e.preventDefault();
+
+            // unhighlight, change selection, highlight
+            this.highlightItem(false);
+            if (this.highlightIndex === null ||
+              this.highlightIndex === this.showing.length - 1) {
+
+              this.highlightIndex = 0;
+            } else {
+              this.highlightIndex++;
+            }
+            this.highlightItem(true);
+            break;
+          case KEY_ENTER: // Activate the highlighted node, if any.
+            if (this.highlightIndex !== null) {
+              e.preventDefault(); // do not commit a change
+
+              var highlightIndex = this.showing[this.highlightIndex];
+              var item = this.$.items.getDistributedNodes()[highlightIndex];
+              this.selectItem(e, item);
+            } else {
+              this.showSuggestions(false);
+              this.editing = false;
+            }
+            break;
+          case KEY_ESC: // Hide the suggestions and reset the current highlight.
+            this.showSuggestions(false);
+            this.editing = false;
+            break;
+          default: // Reset the current highlight.
+            this.highlightReset();
+        }
+      }
+    });
+  </script>
+</polymer-element>
