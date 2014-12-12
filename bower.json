@@ -1,0 +1,9 @@
+{
+    "name": "paper-autocomplete",
+    "private": true,
+    "dependencies": {
+        "polymer": "Polymer/polymer#master",
+        "paper-input": "Polymer/paper-input#master",
+        "core-selector": "Polymer/core-selector#master"
+    }
+}
